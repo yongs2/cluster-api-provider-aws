@@ -755,12 +755,39 @@ func (s *Service) UpdateInstanceSecurityGroups(instanceID string, ids []string) 
 	s.scope.Debug("Found ENIs on instance", "number-of-enis", len(enis), "instance-id", instanceID)
 
 	for _, eni := range enis {
+		// Skip ENIs managed by external tools (e.g., Terraform, manual attachment)
+		if s.shouldSkipENI(eni) {
+			s.scope.Info("Skipping ENI managed by external tool", "eni-id", aws.StringValue(eni.NetworkInterfaceId), "instance-id", instanceID)
+			continue
+		}
+
 		if err := s.attachSecurityGroupsToNetworkInterface(ids, aws.StringValue(eni.NetworkInterfaceId)); err != nil {
 			return errors.Wrapf(err, "failed to modify network interfaces on instance %q", instanceID)
 		}
 	}
 
 	return nil
+}
+
+// shouldSkipENI determines if an ENI should be skipped during security group updates.
+// Returns true if the ENI is managed by external tools (Terraform, manual, etc.).
+func (s *Service) shouldSkipENI(eni *ec2.NetworkInterface) bool {
+	// Check for tags indicating external management
+	for _, tag := range eni.TagSet {
+		key := aws.StringValue(tag.Key)
+		value := aws.StringValue(tag.Value)
+
+		// Skip if managed-by tag indicates external management
+		if key == "managed-by" {
+			if value == "terraform" || value == "manual" || value == "external" {
+				s.scope.Debug("ENI has external management tag", "eni-id", aws.StringValue(eni.NetworkInterfaceId), "managed-by", value)
+				return true
+			}
+		}
+	}
+
+	// By default, manage all ENIs (backward compatible behavior)
+	return false
 }
 
 // UpdateResourceTags updates the tags for an instance.
